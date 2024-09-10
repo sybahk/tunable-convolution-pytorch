@@ -401,7 +401,6 @@ class TunableConvTranspose2d(TunableModule):
 
         b, in_ch, h, w = x.shape
         _, _, out_ch, kh, kw = weight.shape
-        print("out_ch", out_ch)
         output_padding = nn.ConvTranspose2d._output_padding(
             self,
             x,
@@ -445,7 +444,5 @@ class TunableConvTranspose2d(TunableModule):
             if self.bias is not None
             else None
         )
-        print(x.shape)
-        print(weight.shape)
         y = self._batch_convt2d(x, weight, bias=bias)
         return y
