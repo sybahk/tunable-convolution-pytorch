@@ -16,6 +16,7 @@
 # TunableBlock and TunableSequential abstractions were copied from
 # https://github.com/openai/guided-diffusion/blob/main/guided_diffusion/unet.py
 
+import math
 from abc import abstractmethod
 
 import torch
@@ -70,19 +71,22 @@ class TunableModule(TunableBlock):
                 bias=True,
             )
             self.init_mlp_parameters()
+        self.weight = None
+        self.bias = None
 
     def init_mlp_parameters(self):
-        nn.init.normal_(self.mlp.weight.data)
-        nn.init.zeros_(self.mlp.bias.data)
+        nn.Linear.reset_parameters(self.mlp)
 
-    def _init_parameter(self, shape, param_type):
-        params = torch.empty(shape)
-        if param_type == "weight":
-            return nn.Parameter(nn.init.normal_(params), requires_grad=True)
-        elif param_type == "bias":
-            return nn.Parameter(nn.init.zeros_(params), requires_grad=True)
-        else:
-            raise NotImplementedError
+    def _init_parameter(self):
+        # Setting a=sqrt(5) in kaiming_uniform is the same as initializing with
+        # uniform(-1/sqrt(k), 1/sqrt(k)), where k = weight.size(1) * prod(*kernel_size)
+        # For more details see: https://github.com/pytorch/pytorch/issues/15314#issuecomment-477448573
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+            if fan_in != 0:
+                bound = 1 / math.sqrt(fan_in)
+                nn.init.uniform_(self.bias, -bound, bound)
 
     def extra_repr(self):
         s = "num_params={}, expand_params={}, mode={}".format(
@@ -151,16 +155,20 @@ class TunableLinear(TunableModule):
         self.in_features = in_features
         self.out_features = out_features
 
-        self.weight = self._init_parameter(
-            [1, self.num_weights, out_features, in_features], "weight"
+        self.weight = nn.Parameter(
+            torch.empty([1, self.num_weights, out_features, in_features]),
+            requires_grad=True,
         )
         self.bias = (
-            self._init_parameter([1, self.num_weights, out_features], "bias")
+            nn.Parameter(
+                torch.empty([1, self.num_weights, out_features], requires_grad=True)
+            )
             if bias
             else None
         )
+        self._init_parameter()
 
-    def extend_repr(self):
+    def extra_repr(self):
         s = "in_features={}, out_features={}".format(
             self.in_features, self.out_features
         )
@@ -223,22 +231,27 @@ class TunableConv2d(TunableModule):
 
         assert in_channels % self.groups == 0
 
-        self.weight = self._init_parameter(
-            [
-                1,
-                self.num_weights,
-                out_channels,
-                in_channels // self.groups,
-                kernel_size,
-                kernel_size,
-            ],
-            "weight",
+        self.weight = nn.Parameter(
+            torch.empty(
+                [
+                    1,
+                    self.num_weights,
+                    out_channels,
+                    in_channels // self.groups,
+                    kernel_size,
+                    kernel_size,
+                ]
+            ),
+            requires_grad=True,
         )
         self.bias = (
-            self._init_parameter([1, self.num_weights, out_channels], "bias")
+            nn.Parameter(
+                torch.empty([1, self.num_weights, out_channels]), requires_grad=True
+            )
             if bias
             else None
         )
+        self._init_parameter()
 
     def extra_repr(self):
         s = (
