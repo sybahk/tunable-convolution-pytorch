@@ -316,3 +316,136 @@ class TunableConv2d(TunableModule):
 
         y = self._batch_conv2d(x, weight, bias=bias)
         return y
+
+
+# NOTE Experimental code, not introduced in the paper
+
+
+class TunableConvTranspose2d(TunableModule):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        padding=0,
+        output_padding=0,
+        groups=1,
+        bias=False,
+        dilation=1,
+        num_params=1,
+        expand_params=1,
+        mode="mlp",
+    ):
+        super().__init__(num_params=num_params, expand_params=expand_params, mode=mode)
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.stride = stride
+        self.kernel_size = kernel_size
+        self.padding = padding
+        self.dilation = dilation
+        self.groups = groups
+        self.bias = bias
+        self.output_padding = output_padding
+        assert in_channels % self.groups == 0
+
+        self.weight = nn.Parameter(
+            torch.empty(
+                [
+                    1,
+                    self.num_weights,
+                    in_channels // self.groups,
+                    out_channels,
+                    kernel_size,
+                    kernel_size,
+                ]
+            ),
+            requires_grad=True,
+        )
+        self.bias = (
+            nn.Parameter(
+                torch.empty([1, self.num_weights, out_channels]), requires_grad=True
+            )
+            if bias
+            else None
+        )
+        self._init_parameter()
+
+    def extra_repr(self):
+        s = (
+            "input_channels={}, output_channels={}, kernel_size={},"
+            "stride={}, output_padding={}, padding={}, dilation={}, "
+            "groups={}, bias={}"
+            ", {}".format(
+                self.in_channels,
+                self.out_channels,
+                self.kernel_size,
+                self.stride,
+                self.output_padding,
+                self.padding,
+                self.dilation,
+                self.groups,
+                self.bias,
+                TunableModule.extra_repr(self),
+            )
+        )
+        return s
+
+    def _batch_convt2d(
+        self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None = None
+    ):
+        assert weight.shape[1] % self.groups == 0, weight.shape
+        assert x.ndim == 4 and weight.ndim == 5
+        assert x.shape[0] == weight.shape[0]
+
+        b, in_ch, h, w = x.shape
+        _, _, out_ch, kh, kw = weight.shape
+        print("out_ch", out_ch)
+        output_padding = nn.ConvTranspose2d._output_padding(
+            self,
+            x,
+            None,
+            self.stride,
+            self.padding,
+            self.kernel_size,
+            2,
+            self.dilation,
+        )
+        y = F.conv_transpose2d(
+            x.reshape(1, b * in_ch, h, w),
+            weight.reshape(b * in_ch // self.groups, out_ch, kh, kw),
+            stride=self.stride,
+            padding=self.padding,
+            output_padding=output_padding,
+            dilation=self.dilation,
+            groups=b * self.groups,
+        )
+        y = y.reshape(b, out_ch, y.shape[2], y.shape[3])
+
+        if bias is not None:
+            assert bias.ndim == 2
+            assert b == bias.shape[0] and out_ch == bias.shape[1]
+            y = y + bias.reshape(b, out_ch, 1, 1)
+
+        return y
+
+    def forward(self, x: torch.Tensor, px: torch.Tensor):
+        self.check_input(px)
+
+        b = x.shape[0]
+        w = self.num_weights
+
+        if self.mlp is not None:
+            px = self.mlp(px)
+
+        weight = (px.view(b, w, 1, 1, 1, 1) * self.weight).sum(axis=1)
+        bias = (
+            (px.view(b, w, 1) * self.bias).sum(axis=1)
+            if self.bias is not None
+            else None
+        )
+        print(x.shape)
+        print(weight.shape)
+        y = self._batch_convt2d(x, weight, bias=bias)
+        return y
